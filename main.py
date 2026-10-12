@@ -76,7 +76,7 @@ GROUPS = [
         "name": "Admin",
         "role_id": 1558897520606974112,
         "target": 5,
-        "section": "Management",
+        "section": "Staff",
     },
     {
         "name": "Staff",
