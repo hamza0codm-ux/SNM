@@ -1,15 +1,12 @@
-
 import os
 import json
-
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-
-# =========================================================
-# SETTINGS — CHANGE THESE HERE
-# =========================================================
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
 load_dotenv()
 
@@ -17,17 +14,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 ROSTER_CHANNEL_ID = 1558889366565167284
 
-STATE_FILE = "roster_state.json"
-
-PREFIX = "!"
-
-# Embed colour: change this hex value if you want another colour.
+# Change this colour to customise the roster embed.
+# Example: blue = 0x5865F2, green = 0x2ECC71, red = 0xE74C3C
 EMBED_COLOUR = 0x5865F2
-
-
-# =========================================================
-# CUSTOM EMOJIS
-# =========================================================
 
 EMOJI_TEAM = "<:Team:1354594711540863148>"
 
@@ -36,83 +25,83 @@ EMOJI_LEADERSHIP = "<:SNM_Directors:1476982272795082874>"
 EMOJI_MANAGEMENT = "<:SNM_Management:1476982218558537950>"
 EMOJI_STAFF = "<:SNM_Trial_Staff:1476982367464849439>"
 
+STATE_FILE = "roster_state.json"
+PREFIX = "!"
 
-# =========================================================
-# STAFF ROLES
+# ============================================================
+# STAFF HIERARCHY
 # Listed from highest rank to lowest rank.
-# Members are counted ONLY under their highest role.
-# =========================================================
+# Members appear ONLY under their highest configured rank.
+# ============================================================
 
 GROUPS = [
     {
         "name": "Founder",
         "role_id": 1558896822410547210,
         "target": 1,
-        "section": "ownership",
+        "section": "Ownership",
     },
     {
         "name": "Owner",
         "role_id": 1558896894678278164,
         "target": 2,
-        "section": "ownership",
+        "section": "Ownership",
     },
     {
         "name": "Co Owner",
         "role_id": 1558896918443327589,
         "target": None,
-        "section": "ownership",
+        "section": "Ownership",
     },
     {
         "name": "Operations",
         "role_id": 1558896966459592704,
         "target": 4,
-        "section": "leadership",
+        "section": "Leadership",
     },
     {
         "name": "Directors",
         "role_id": 1558897001406406741,
         "target": 8,
-        "section": "leadership",
+        "section": "Leadership",
     },
     {
         "name": "General Management",
         "role_id": 1558897060441235558,
         "target": 4,
-        "section": "management",
+        "section": "Management",
     },
     {
         "name": "Management",
         "role_id": 1558897026568028273,
         "target": 13,
-        "section": "management",
+        "section": "Management",
     },
     {
         "name": "Admin",
         "role_id": 1558897520606974112,
         "target": 5,
-        "section": "staff",
+        "section": "Management",
     },
     {
         "name": "Staff",
         "role_id": 1558897546242429100,
         "target": 10,
-        "section": "staff",
+        "section": "Staff",
     },
     {
         "name": "Trial Staff",
         "role_id": 1558897577976528957,
         "target": 10,
-        "section": "staff",
+        "section": "Staff",
     },
 ]
 
-
-# =========================================================
-# MANAGEMENT DEPARTMENT ROLES
-# These mentions appear beside Management members only.
-# =========================================================
-
-MANAGEMENT_ROLE_WITH_DEPARTMENTS = 1558897026568028273
+# ============================================================
+# DEPARTMENT ROLE IDS
+# Only members whose highest configured staff rank is
+# Management will have these department roles displayed.
+# ============================================================
 
 DEPARTMENT_ROLE_IDS = [
     1558897194281467987,
@@ -125,10 +114,25 @@ DEPARTMENT_ROLE_IDS = [
     1558897488151191694,
 ]
 
+MANAGEMENT_ROLE_ID = 1558897026568028273
 
-# =========================================================
-# DISCORD BOT SETUP
-# =========================================================
+SECTION_EMOJIS = {
+    "Ownership": EMOJI_OWNERSHIP,
+    "Leadership": EMOJI_LEADERSHIP,
+    "Management": EMOJI_MANAGEMENT,
+    "Staff": EMOJI_STAFF,
+}
+
+SECTION_ORDER = [
+    "Ownership",
+    "Leadership",
+    "Management",
+    "Staff",
+]
+
+# ============================================================
+# BOT SETUP
+# ============================================================
 
 intents = discord.Intents.default()
 intents.guilds = True
@@ -141,58 +145,82 @@ bot = commands.Bot(
     help_command=None,
 )
 
-
-# =========================================================
-# SECTION HEADERS
-# =========================================================
-
-SECTION_HEADERS = {
-    "ownership": f"{EMOJI_OWNERSHIP} **OWNERSHIP**",
-    "leadership": f"{EMOJI_LEADERSHIP} **LEADERSHIP**",
-    "management": f"{EMOJI_MANAGEMENT} **MANAGEMENT**",
-    "staff": f"{EMOJI_STAFF} **STAFF**",
-}
-
-SECTION_ORDER = [
-    "ownership",
-    "leadership",
-    "management",
-    "staff",
-]
+# Prevent simultaneous refreshes from creating duplicate panels.
+refresh_locks = {}
 
 
-# =========================================================
-# HELPER FUNCTIONS
-# =========================================================
+# ============================================================
+# SAVE / LOAD PANEL STATE
+# ============================================================
+
+def load_state():
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+
+            if isinstance(data, dict):
+                return data
+
+    except FileNotFoundError:
+        pass
+
+    except (json.JSONDecodeError, OSError) as error:
+        print(f"Could not load roster state: {error}")
+
+    return {}
+
+
+def save_state(state):
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as file:
+            json.dump(state, file, indent=4)
+
+    except OSError as error:
+        print(f"Could not save roster state: {error}")
+
+
+# ============================================================
+# ROLE HELPERS
+# ============================================================
 
 def get_highest_staff_role(member):
     """
-    Returns the highest configured staff role held by a member.
-    GROUPS is ordered from highest rank to lowest rank.
+    Return the highest configured staff role a member has.
+    GROUPS is ordered from highest to lowest.
     """
+
+    if member.bot:
+        return None
 
     member_role_ids = {role.id for role in member.roles}
 
     for group in GROUPS:
         if group["role_id"] in member_role_ids:
-            return group["role_id"]
+            return group
 
     return None
 
 
-def get_department_mentions(member, guild):
+def get_department_mentions(member):
     """
-    Returns department role mentions for Management members.
-    Missing or deleted department roles are skipped.
+    Show department role mentions only if Management is
+    the member's highest configured staff rank.
     """
+
+    highest_role = get_highest_staff_role(member)
+
+    if not highest_role:
+        return ""
+
+    if highest_role["role_id"] != MANAGEMENT_ROLE_ID:
+        return ""
 
     member_role_ids = {role.id for role in member.roles}
-
     mentions = []
 
     for role_id in DEPARTMENT_ROLE_IDS:
         if role_id in member_role_ids:
-            role = guild.get_role(role_id)
+            role = member.guild.get_role(role_id)
 
             if role:
                 mentions.append(role.mention)
@@ -203,135 +231,140 @@ def get_department_mentions(member, guild):
     return " " + " ".join(mentions)
 
 
-async def get_unique_role_members(guild, role_id):
+def get_unique_role_members(guild, role_id):
     """
-    Gets non-bot members who have this role as their
-    highest configured staff role.
+    Return non-bot members whose highest configured staff
+    role is exactly the requested role.
     """
 
-    role = guild.get_role(role_id)
-
-    if role is None:
-        return []
-
-    members = []
+    matching_members = []
 
     for member in guild.members:
         if member.bot:
             continue
 
-        highest_role_id = get_highest_staff_role(member)
+        highest_role = get_highest_staff_role(member)
 
-        if highest_role_id == role_id:
-            members.append(member)
+        if highest_role and highest_role["role_id"] == role_id:
+            matching_members.append(member)
 
-    members.sort(key=lambda member: member.display_name.lower())
+    matching_members.sort(
+        key=lambda member: member.display_name.casefold()
+    )
 
-    return members
+    return matching_members
 
 
-def format_member_line(member, guild, staff_role_id):
+def get_target_text(group, member_count):
     """
-    Formats a member mention.
-    Department mentions are displayed only for Management.
+    Format the current count against the configured target.
+    Co Owner has no target and displays N/A.
+    """
+
+    target = group["target"]
+
+    if target is None:
+        return "N/A"
+
+    return f"{member_count}/{target}"
+
+
+def format_member_line(member, group):
+    """
+    Format one roster member.
+    Department mentions are restricted to Management.
     """
 
     line = member.mention
 
-    if staff_role_id == MANAGEMENT_ROLE_WITH_DEPARTMENTS:
-        line += get_department_mentions(member, guild)
+    if group["role_id"] == MANAGEMENT_ROLE_ID:
+        line += get_department_mentions(member)
 
     return line
 
 
-def get_target_text(current_count, target):
-    if target is None:
-        return f"{current_count}/N/A"
-
-    return f"{current_count}/{target}"
-
-
-# =========================================================
+# ============================================================
 # BUILD ROSTER DESCRIPTION
-# =========================================================
+# ============================================================
 
 async def build_description(guild):
-    """
-    Creates the roster in this format:
+    lines = []
 
-    @Founder 0/1
-    N/A
+    # Keep the member cache as up to date as Discord permits.
+    try:
+        await guild.chunk(cache=True)
+    except (discord.Forbidden, discord.HTTPException) as error:
+        print(f"Could not fully refresh member cache: {error}")
 
-    @Owner 1/2
-    @Member
-    """
+    for section in SECTION_ORDER:
+        section_groups = [
+            group
+            for group in GROUPS
+            if group["section"] == section
+        ]
 
-    section_lines = {
-        section: [SECTION_HEADERS[section]]
-        for section in SECTION_ORDER
-    }
-
-    for group in GROUPS:
-        role_id = group["role_id"]
-        target = group["target"]
-        section = group["section"]
-
-        role = guild.get_role(role_id)
-
-        # If the role was deleted or cannot be found,
-        # show a clear placeholder.
-        if role is None:
-            role_line = f"**{group['name']}** N/A"
-            section_lines[section].append(role_line)
-            section_lines[section].append("N/A")
-            section_lines[section].append("")
+        if not section_groups:
             continue
 
-        members = await get_unique_role_members(guild, role_id)
+        section_emoji = SECTION_EMOJIS.get(section, "")
 
-        count_text = get_target_text(len(members), target)
+        lines.append(f"{section_emoji} **{section}**")
+        lines.append("")
 
-        # IMPORTANT:
-        # The role ping and count are on the SAME line.
-        role_line = f"{role.mention} {count_text}"
+        for group in section_groups:
+            role = guild.get_role(group["role_id"])
 
-        section_lines[section].append(role_line)
-
-        if members:
-            for member in members:
-                member_line = format_member_line(
-                    member,
-                    guild,
-                    role_id,
+            # If a configured role was deleted, show a warning
+            # rather than silently using a different role.
+            if role is None:
+                lines.append(
+                    f"**{group['name']}** — Role not found"
                 )
+                lines.append("N/A")
+                lines.append("")
+                continue
 
-                section_lines[section].append(member_line)
-        else:
-            section_lines[section].append("N/A")
+            members = get_unique_role_members(
+                guild,
+                group["role_id"],
+            )
 
-        section_lines[section].append("")
+            count_text = get_target_text(group, len(members))
 
-    # Separate the four main sections.
-    description_parts = []
+            # The role mention and count are on the same line.
+            lines.append(f"{role.mention} — {count_text}")
 
-    for index, section in enumerate(SECTION_ORDER):
-        if index > 0:
-            description_parts.append("---")
+            if members:
+                for member in members:
+                    lines.append(format_member_line(member, group))
+            else:
+                lines.append("N/A")
 
-        description_parts.extend(section_lines[section])
+            lines.append("")
 
-    description = "\n".join(description_parts).strip()
+        lines.append("---")
+        lines.append("")
+
+    # Remove the final separator so the embed ends neatly.
+    while lines and lines[-1] == "":
+        lines.pop()
+
+    if lines and lines[-1] == "---":
+        lines.pop()
+
+    description = "\n".join(lines).strip()
 
     # Discord embed descriptions have a 4096-character limit.
     if len(description) > 4096:
-        description = description[:4070] + "\n\nRoster shortened."
+        description = description[:4050].rsplit("\n", 1)[0]
+        description += "\n\nRoster shortened because it exceeds Discord's embed limit."
 
-    return description
+    return description or "No staff members to display."
 
 
-# =========================================================
-# EMBED CREATION
-# =========================================================
+# ============================================================
+# CREATE EMBED
+# ============================================================
 
 async def create_roster_embed(guild):
     description = await build_description(guild)
@@ -346,94 +379,179 @@ async def create_roster_embed(guild):
     return embed
 
 
-# =========================================================
-# MESSAGE STATE
-# =========================================================
+# ============================================================
+# FIND THE EXISTING PANEL
+# ============================================================
 
-def load_state():
-    if not os.path.exists(STATE_FILE):
-        return {}
+def is_roster_panel(message):
+    if bot.user is None:
+        return False
+
+    if message.author.id != bot.user.id:
+        return False
+
+    if not message.embeds:
+        return False
+
+    title = message.embeds[0].title
+
+    return bool(
+        title and "SNM STAFF ROSTER" in title.upper()
+    )
+
+
+async def find_existing_panel(channel):
+    """
+    Search recent channel history for an existing roster embed.
+    This allows recovery if the saved message was deleted
+    or the bot's local state file was reset.
+    """
 
     try:
-        with open(STATE_FILE, "r", encoding="utf-8") as file:
-            return json.load(file)
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as file:
-        json.dump(state, file, indent=4)
-
-
-# =========================================================
-# REFRESH ROSTER
-# =========================================================
-
-async def refresh_roster(guild):
-    channel = guild.get_channel(ROSTER_CHANNEL_ID)
-
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(ROSTER_CHANNEL_ID)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            print(
-                f"Could not access roster channel "
-                f"{ROSTER_CHANNEL_ID}."
-            )
-            return
-
-    if not isinstance(channel, discord.TextChannel):
-        print("The configured roster channel is not a text channel.")
-        return
-
-    # Populate the guild member cache before counting members.
-    try:
-        await guild.chunk(cache=True)
-    except (discord.Forbidden, discord.HTTPException):
-        print("Could not refresh the guild member cache.")
-
-    embed = await create_roster_embed(guild)
-
-    state = load_state()
-    guild_key = str(guild.id)
-    message_id = state.get(guild_key)
-
-    # Edit the existing roster message if it still exists.
-    if message_id:
-        try:
-            message = await channel.fetch_message(int(message_id))
-            await message.edit(embed=embed)
-            print("Staff roster updated.")
-            return
-
-        except discord.NotFound:
-            print("Previous roster message was deleted. Creating a new one.")
-
-        except (discord.Forbidden, discord.HTTPException) as error:
-            print(f"Could not edit roster message: {error}")
-            return
-
-    # Send a new roster message.
-    try:
-        message = await channel.send(embed=embed)
-
-        state[guild_key] = message.id
-        save_state(state)
-
-        print("Staff roster message created.")
+        async for message in channel.history(limit=500):
+            if is_roster_panel(message):
+                return message
 
     except (discord.Forbidden, discord.HTTPException) as error:
-        print(f"Could not send roster message: {error}")
+        print(
+            "Could not search roster channel history. "
+            "Check the bot's View Channel and Read Message History "
+            f"permissions. Details: {error}"
+        )
+        return None
+
+    return None
 
 
-# =========================================================
-# AUTOMATIC UPDATES
-# =========================================================
+# ============================================================
+# REFRESH / CREATE ROSTER PANEL
+# ============================================================
+
+async def refresh_roster(guild):
+    """
+    Update the existing roster panel if possible.
+    If the old panel was deleted or cannot be found,
+    create a replacement and save its message ID.
+    """
+
+    lock = refresh_locks.setdefault(
+        guild.id,
+        __import__("asyncio").Lock(),
+    )
+
+    async with lock:
+        channel = guild.get_channel(ROSTER_CHANNEL_ID)
+
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(
+                    ROSTER_CHANNEL_ID
+                )
+
+            except (
+                discord.NotFound,
+                discord.Forbidden,
+                discord.HTTPException,
+            ) as error:
+                print(
+                    f"Could not access roster channel "
+                    f"{ROSTER_CHANNEL_ID}: {error}"
+                )
+                return
+
+        if not isinstance(channel, discord.TextChannel):
+            print("The configured roster channel is not a text channel.")
+            return
+
+        if channel.guild.id != guild.id:
+            print("The configured roster channel belongs to another server.")
+            return
+
+        try:
+            await guild.chunk(cache=True)
+        except (discord.Forbidden, discord.HTTPException) as error:
+            print(f"Could not refresh member cache: {error}")
+
+        # Build the embed using the latest available member cache.
+        embed = await create_roster_embed(guild)
+
+        state = load_state()
+        guild_key = str(guild.id)
+        saved_message_id = state.get(guild_key)
+
+        roster_message = None
+
+        # First, try the message ID saved locally.
+        if saved_message_id:
+            try:
+                message = await channel.fetch_message(
+                    int(saved_message_id)
+                )
+
+                if is_roster_panel(message):
+                    roster_message = message
+
+            except discord.NotFound:
+                print(
+                    "Saved roster panel was deleted. "
+                    "Searching for an existing panel."
+                )
+
+            except (ValueError, TypeError):
+                print("Saved roster message ID is invalid.")
+
+            except (
+                discord.Forbidden,
+                discord.HTTPException,
+            ) as error:
+                print(f"Could not fetch saved panel: {error}")
+                return
+
+        # If the saved panel is missing, search channel history.
+        if roster_message is None:
+            roster_message = await find_existing_panel(channel)
+
+        # Create a replacement only if no existing panel was found.
+        try:
+            if roster_message is not None:
+                await roster_message.edit(embed=embed)
+
+                print(
+                    "Existing roster panel updated: "
+                    f"{roster_message.id}"
+                )
+
+            else:
+                roster_message = await channel.send(embed=embed)
+
+                print(
+                    "New roster panel created: "
+                    f"{roster_message.id}"
+                )
+
+            # Save the message ID for the next refresh.
+            state[guild_key] = roster_message.id
+            save_state(state)
+
+        except discord.Forbidden:
+            print(
+                "Permission denied. The bot needs View Channel, "
+                "Send Messages, Embed Links, Read Message History, "
+                "and permission to edit its own roster message."
+            )
+
+        except discord.HTTPException as error:
+            print(f"Discord rejected the roster update: {error}")
+
+
+# ============================================================
+# BOT EVENTS
+# ============================================================
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}.")
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    print("SNM Staff Roster bot is online.")
 
     for guild in bot.guilds:
         await refresh_roster(guild)
@@ -441,20 +559,12 @@ async def on_ready():
 
 @bot.event
 async def on_member_update(before, after):
-    before_roles = {role.id for role in before.roles}
-    after_roles = {role.id for role in after.roles}
-
-    if before_roles != after_roles:
-        relevant_role_ids = {
-            group["role_id"] for group in GROUPS
-        }
-
-        relevant_role_ids.update(DEPARTMENT_ROLE_IDS)
-
-        changed_roles = before_roles.symmetric_difference(after_roles)
-
-        if changed_roles.intersection(relevant_role_ids):
-            await refresh_roster(after.guild)
+    # Only refresh if the member's roles or display name changed.
+    if (
+        before.roles != after.roles
+        or before.display_name != after.display_name
+    ):
+        await refresh_roster(after.guild)
 
 
 @bot.event
@@ -467,47 +577,96 @@ async def on_member_remove(member):
     await refresh_roster(member.guild)
 
 
-# =========================================================
-# MANUAL COMMANDS
-# =========================================================
+@bot.event
+async def on_guild_role_update(before, after):
+    await refresh_roster(after.guild)
+
+
+@bot.event
+async def on_guild_role_delete(role):
+    await refresh_roster(role.guild)
+
+
+# ============================================================
+# ADMIN COMMANDS
+# ============================================================
 
 @bot.command(name="refresh_roster")
 @commands.has_permissions(administrator=True)
 async def refresh_roster_command(ctx):
+    """
+    Manually refresh the roster.
+    Usage: !refresh_roster
+    """
+
     await refresh_roster(ctx.guild)
-    await ctx.reply("Staff roster refresh requested.", mention_author=False)
+
+    await ctx.send(
+        "Roster refresh requested.",
+        delete_after=5,
+    )
 
 
 @bot.command(name="setup_roster")
 @commands.has_permissions(administrator=True)
 async def setup_roster_command(ctx):
+    """
+    Find and update the existing panel, or create one if missing.
+    Usage: !setup_roster
+    """
+
     await refresh_roster(ctx.guild)
-    await ctx.reply("Staff roster setup requested.", mention_author=False)
+
+    await ctx.send(
+        "Roster setup completed. Check the roster channel.",
+        delete_after=5,
+    )
 
 
-# =========================================================
+# ============================================================
 # COMMAND ERROR HANDLING
-# =========================================================
+# ============================================================
 
 @refresh_roster_command.error
-@setup_roster_command.error
-async def roster_command_error(ctx, error):
+async def refresh_roster_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
-        await ctx.reply(
+        await ctx.send(
             "You need Administrator permission to use this command.",
-            mention_author=False,
+            delete_after=5,
         )
     else:
-        print(f"Command error: {error}")
+        print(f"Refresh command error: {error}")
+        await ctx.send(
+            "Something went wrong while refreshing the roster. "
+            "Check the Railway logs.",
+            delete_after=8,
+        )
 
 
-# =========================================================
+@setup_roster_command.error
+async def setup_roster_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send(
+            "You need Administrator permission to use this command.",
+            delete_after=5,
+        )
+    else:
+        print(f"Setup command error: {error}")
+        await ctx.send(
+            "Something went wrong while setting up the roster. "
+            "Check the Railway logs.",
+            delete_after=8,
+        )
+
+
+# ============================================================
 # START BOT
-# =========================================================
+# ============================================================
 
 if not BOT_TOKEN:
     raise RuntimeError(
-        "BOT_TOKEN is missing. Add BOT_TOKEN to your Railway Variables."
+        "BOT_TOKEN is missing. Add BOT_TOKEN to your Railway "
+        "Variables or to your local .env file."
     )
 
 bot.run(BOT_TOKEN)
