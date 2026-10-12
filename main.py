@@ -21,51 +21,36 @@ GUILD_ID = 1558112559125757992
 ROSTER_CHANNEL_ID = 1558889366565167284
 MESSAGE_FILE = "roster_message.json"
 
-EMBED_COLOUR = 0x5865F2
-
-# =========================
-# INTENTS
-# =========================
-
-intents = discord.Intents.default()
-intents.guilds = True
-intents.members = True
-intents.message_content = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
-
-# =========================
-# EMOJIS
-# =========================
-
+# CHANGE YOUR EMOJIS HERE
 TEAM_EMOJI = "<:Team:1559130847972687932>"
 OWNERSHIP_EMOJI = "<:SNM_Blue:1559131051442438214>"
 LEADERSHIP_EMOJI = "<:SNM_red:1559131114524639242>"
 MANAGEMENT_EMOJI = "<:SNM_Orange:1559131193205858305>"
 STAFF_EMOJI = "<:SNM_Green:1559131246645346344>"
 
-DIVIDER = "━━━━━━━━━━━━━━━━━━━━"
-
 # =========================
 # STAFF ROLES
-# Highest configured role first.
+# Highest configured role first
 # =========================
 
 STAFF_ROLES = [
-    {"id": 1558896822410547210, "name": "Founder", "target": 1, "section": "Ownership"},
-    {"id": 1558896894678278164, "name": "Owner", "target": 2, "section": "Ownership"},
-    {"id": 1558896918443327589, "name": "Co Owner", "target": 3, "section": "Ownership"},
+    {"id": 1558896822410547210, "name": "Founder", "target": 1},
+    {"id": 1558896894678278164, "name": "Owner", "target": 2},
+    {"id": 1558896918443327589, "name": "Co Owner", "target": 3},
 
-    {"id": 1558896966459592704, "name": "Operations", "target": 4, "section": "Leadership"},
-    {"id": 1558897001406406741, "name": "Directors", "target": 8, "section": "Leadership"},
+    {"id": 1558896966459592704, "name": "Operations", "target": 4},
+    {"id": 1558897001406406741, "name": "Directors", "target": 8},
 
-    {"id": 1558897060441235558, "name": "General Management", "target": 4, "section": "Management"},
-    {"id": 1558897026568028273, "name": "Management", "target": 13, "section": "Management"},
+    {"id": 1558897060441235558, "name": "General Management", "target": 4},
+    {"id": 1558897026568028273, "name": "Management", "target": 13},
 
-    {"id": 1558897520606974112, "name": "Admin", "target": 5, "section": "Staff"},
-    {"id": 1558897546242429100, "name": "Staff", "target": 10, "section": "Staff"},
-    {"id": 1558897577976528957, "name": "Trial Staff", "target": 10, "section": "Staff"},
+    {"id": 1558897520606974112, "name": "Admin", "target": 5},
+    {"id": 1558897546242429100, "name": "Staff", "target": 10},
+    {"id": 1558897577976528957, "name": "Trial Staff", "target": 10},
 ]
+
+# Department roles appear beside Management members only.
+# They are NOT listed separately at the bottom.
 
 DEPARTMENT_ROLE_IDS = [
     1558897194281467987,
@@ -100,6 +85,21 @@ SECTIONS = [
         "roles": ["Admin", "Staff", "Trial Staff"],
     },
 ]
+
+# =========================
+# BOT SETUP
+# =========================
+
+intents = discord.Intents.default()
+intents.guilds = True
+intents.members = True
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+refresh_lock = asyncio.Lock()
+refresh_task = None
+
 
 # =========================
 # MESSAGE ID STORAGE
@@ -144,25 +144,33 @@ def members_for_role(guild, staff_role):
         if highest and highest["id"] == staff_role["id"]:
             members.append(member)
 
-    return sorted(members, key=lambda m: m.display_name.casefold())
+    return sorted(
+        members,
+        key=lambda member: member.display_name.casefold()
+    )
 
 
 def department_mentions(member):
     member_role_ids = {role.id for role in member.roles}
+
     departments = [
         f"<@&{role_id}>"
         for role_id in DEPARTMENT_ROLE_IDS
         if role_id in member_role_ids
     ]
 
-    return " // " + " // ".join(departments) if departments else ""
+    if not departments:
+        return ""
+
+    return " // " + " // ".join(departments)
 
 
 def build_role_entry(guild, staff_role):
     members = members_for_role(guild, staff_role)
 
     lines = [
-        f"<@&{staff_role['id']}> — {len(members)}/{staff_role['target']}"
+        f"<@&{staff_role['id']}> — "
+        f"{len(members)}/{staff_role['target']}"
     ]
 
     if not members:
@@ -171,6 +179,7 @@ def build_role_entry(guild, staff_role):
         for member in members:
             line = f"- {member.mention}"
 
+            # Only the Management role gets department mentions.
             if staff_role["name"] == "Management":
                 line += department_mentions(member)
 
@@ -180,121 +189,241 @@ def build_role_entry(guild, staff_role):
 
 
 # =========================
-# BUILD ONE NORMAL EMBED
+# DISCORD COMPONENTS V2
 # =========================
 
-def build_roster_embed(guild):
-    description_parts = [
-        f"**{OWNERSHIP_EMOJI} Ownership Team**"
-    ]
+def add_text(view, content):
+    """
+    Adds text displays in safe-sized chunks to respect
+    Discord's text component character limit.
+    """
+    max_length = 3900
+    content = str(content)
 
-    for section_index, section in enumerate(SECTIONS):
-        if section_index > 0:
-            description_parts.append(f"\n{DIVIDER}\n")
+    while content:
+        if len(content) <= max_length:
+            view.add_item(discord.ui.TextDisplay(content))
+            break
 
-        description_parts.append(
-            f"**{section['emoji']} {section['name']}**"
+        split_at = content.rfind("\n", 0, max_length)
+
+        if split_at < 1:
+            split_at = max_length
+
+        view.add_item(
+            discord.ui.TextDisplay(content[:split_at])
         )
 
-        for role_name in section["roles"]:
+        content = content[split_at:].lstrip("\n")
+
+
+def add_separator(view, visible=True, large=True):
+    """
+    Uses Discord's actual Separator component.
+    This is not a line made from text characters.
+    """
+    spacing = (
+        discord.SeparatorSpacing.large
+        if large
+        else discord.SeparatorSpacing.small
+    )
+
+    view.add_item(
+        discord.ui.Separator(
+            visible=visible,
+            spacing=spacing,
+        )
+    )
+
+
+def build_roster_view(guild):
+    view = discord.ui.LayoutView(timeout=None)
+
+    # Roster title
+    add_text(
+        view,
+        f"# {TEAM_EMOJI} | SNM Staff Roster"
+    )
+
+    for section_index, section in enumerate(SECTIONS):
+
+        # Actual Discord divider between the main sections
+        if section_index > 0:
+            add_separator(view, visible=True, large=True)
+
+        add_text(
+            view,
+            f"## {section['emoji']} {section['name']}"
+        )
+
+        for role_index, role_name in enumerate(section["roles"]):
             staff_role = next(
-                role for role in STAFF_ROLES
+                role
+                for role in STAFF_ROLES
                 if role["name"] == role_name
             )
 
-            description_parts.append(
+            add_text(
+                view,
                 build_role_entry(guild, staff_role)
             )
 
-    description_parts.append(f"\n{DIVIDER}\n")
-    description_parts.append("**Departments:**")
+            # Subtle spacing between role blocks
+            if role_index < len(section["roles"]) - 1:
+                add_separator(
+                    view,
+                    visible=False,
+                    large=False
+                )
 
-    for role_id in DEPARTMENT_ROLE_IDS:
-        description_parts.append(f"<@&{role_id}>")
+    # No Departments section at the bottom.
+    return view
 
-    embed = discord.Embed(
-        title=f"{TEAM_EMOJI} | SNM Staff Roster",
-        description="\n\n".join(description_parts),
-        colour=EMBED_COLOUR,
-    )
 
-    return embed
+# =========================
+# FIND EXISTING ROSTER
+# =========================
+
+async def find_existing_message(channel):
+    message_id = load_message_id()
+
+    if message_id:
+        try:
+            return await channel.fetch_message(int(message_id))
+        except (
+            discord.NotFound,
+            discord.HTTPException,
+            ValueError,
+        ):
+            pass
+
+    # Recover an older classic-embed roster if the saved ID is missing.
+    try:
+        async for message in channel.history(limit=100):
+            if message.author.id != bot.user.id:
+                continue
+
+            if any(
+                embed.title
+                and "SNM Staff Roster" in embed.title
+                for embed in message.embeds
+            ):
+                save_message_id(message.id)
+                return message
+
+    except discord.HTTPException:
+        logging.exception(
+            "Could not search recent channel messages."
+        )
+
+    return None
 
 
 # =========================
 # REFRESH ROSTER
 # =========================
 
-refresh_lock = asyncio.Lock()
-refresh_task = None
-
-
 async def refresh_roster():
     async with refresh_lock:
         guild = bot.get_guild(GUILD_ID)
 
         if guild is None:
-            logging.error("Server not found. Check GUILD_ID.")
+            logging.error(
+                "Server not found. Check GUILD_ID."
+            )
             return
 
         channel = guild.get_channel(ROSTER_CHANNEL_ID)
 
         if channel is None:
             try:
-                channel = await bot.fetch_channel(ROSTER_CHANNEL_ID)
+                channel = await bot.fetch_channel(
+                    ROSTER_CHANNEL_ID
+                )
             except discord.HTTPException:
-                logging.exception("Roster channel could not be found.")
+                logging.exception(
+                    "Roster channel could not be found."
+                )
                 return
 
+        # Load the member cache so counts are as accurate as possible.
         try:
-            await asyncio.wait_for(guild.chunk(cache=True), timeout=30)
+            await asyncio.wait_for(
+                guild.chunk(cache=True),
+                timeout=30
+            )
         except asyncio.TimeoutError:
             logging.warning(
-                "Member cache timed out; roster counts may be incomplete."
+                "Member cache timed out; roster counts "
+                "may be incomplete."
             )
         except discord.HTTPException:
-            logging.exception("Could not load the server member cache.")
+            logging.exception(
+                "Could not load the server member cache."
+            )
 
-        embed = build_roster_embed(guild)
-        message_id = load_message_id()
-        old_message = None
+        view = build_roster_view(guild)
+        old_message = await find_existing_message(channel)
 
-        if message_id:
-            try:
-                old_message = await channel.fetch_message(int(message_id))
-            except (discord.NotFound, discord.HTTPException, ValueError):
-                old_message = None
+        # Show mentions without notifying every member on every edit.
+        allowed_mentions = discord.AllowedMentions.none()
 
         try:
-            # Embeds display role mentions without repeatedly notifying
-            # every role whenever the roster refreshes.
-            allowed_mentions = discord.AllowedMentions.none()
+            if old_message:
+                # Discord does not allow a classic embed message to
+                # be converted into Components V2 by editing it.
+                if not old_message.flags.is_components_v2:
+                    try:
+                        await old_message.delete()
+                    except (
+                        discord.NotFound,
+                        discord.HTTPException,
+                    ):
+                        logging.warning(
+                            "Could not delete the old roster message."
+                        )
+
+                    old_message = None
 
             if old_message:
                 await old_message.edit(
                     content=None,
-                    embed=embed,
+                    embed=None,
                     embeds=[],
-                    view=None,
+                    view=view,
                     allowed_mentions=allowed_mentions,
                 )
-                logging.info("Roster embed updated.")
+
+                logging.info(
+                    "Roster updated in the existing message."
+                )
+
             else:
                 new_message = await channel.send(
-                    embed=embed,
+                    view=view,
                     allowed_mentions=allowed_mentions,
                 )
+
                 save_message_id(new_message.id)
-                logging.info("Roster embed posted.")
+
+                logging.info(
+                    "Created the single Components V2 roster message."
+                )
 
         except discord.Forbidden:
             logging.exception(
                 "Missing permissions to send or edit the roster."
             )
+
         except discord.HTTPException:
-            logging.exception("Discord rejected the roster message.")
+            logging.exception(
+                "Discord rejected the roster message."
+            )
+
         except Exception:
-            logging.exception("Unexpected roster refresh error.")
+            logging.exception(
+                "Unexpected roster refresh error."
+            )
 
 
 async def delayed_refresh():
@@ -308,16 +437,22 @@ def schedule_refresh():
     if refresh_task and not refresh_task.done():
         refresh_task.cancel()
 
-    refresh_task = asyncio.create_task(delayed_refresh())
+    refresh_task = asyncio.create_task(
+        delayed_refresh()
+    )
 
 
 # =========================
-# AUTOMATIC EVENTS
+# AUTOMATIC UPDATES
 # =========================
 
 @bot.event
 async def on_ready():
-    logging.info("Logged in as %s (%s)", bot.user, bot.user.id)
+    logging.info(
+        "Logged in as %s (%s)",
+        bot.user,
+        bot.user.id
+    )
     schedule_refresh()
 
 
@@ -338,7 +473,10 @@ async def on_member_update(before, after):
     if after.guild.id != GUILD_ID:
         return
 
-    if before.roles != after.roles or before.nick != after.nick:
+    if (
+        before.roles != after.roles
+        or before.nick != after.nick
+    ):
         schedule_refresh()
 
 
@@ -354,16 +492,8 @@ async def on_guild_role_delete(role):
         schedule_refresh()
 
 
-@bot.event
-async def on_message_delete(message):
-    if message.channel.id != ROSTER_CHANNEL_ID:
-        return
-
-    saved_id = load_message_id()
-
-    if saved_id and message.id == int(saved_id):
-        logging.info("Roster deleted; creating a replacement.")
-        schedule_refresh()
+# Intentionally no on_message_delete handler.
+# This prevents deletion/recreation loops.
 
 
 # =========================
@@ -374,7 +504,10 @@ async def on_message_delete(message):
 @commands.has_permissions(administrator=True)
 async def roster_refresh_command(ctx):
     await refresh_roster()
-    await ctx.reply("Roster refreshed.", delete_after=5)
+    await ctx.reply(
+        "Roster refreshed.",
+        delete_after=5
+    )
 
 
 @roster_refresh_command.error
@@ -387,7 +520,7 @@ async def roster_refresh_error(ctx, error):
 
 
 # =========================
-# START
+# START BOT
 # =========================
 
 if not BOT_TOKEN:
