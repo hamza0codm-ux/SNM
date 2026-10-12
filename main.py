@@ -59,7 +59,7 @@ GROUPS = [
     {
         "name": "Co Owner",
         "role_id": 1558896918443327589,
-        "target": None,
+        "target": 3,
         "section": "ownership",
     },
     {
