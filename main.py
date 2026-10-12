@@ -498,13 +498,12 @@ async def refresh_roster(guild):
 
         try:
             if roster_message is not None:
-                await roster_message.edit(
-                    content=None,
-                    embed=None,
-                    embeds=[],
-                    attachments=[],
-                    view=view,
-                )
+             await roster_message.edit(
+    content=None,
+    embeds=[],
+    attachments=[],
+    view=view,
+)
 
                 print(
                     f"SUCCESS: V2 roster updated "
