@@ -14,7 +14,8 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ROSTER_CHANNEL_ID = 1558889366565167284
-EMBED_COLOUR = 0x5865F2  # Used as the V2 container accent colour
+ROSTER_STATE_FILE = "roster_state.json"
+ROSTER_TITLE = "SNM STAFF ROSTER"
 
 EMOJI_TEAM = "<:Team:1354594711540863148>"
 EMOJI_OWNERSHIP = "<:SNM_Staff:1476982311588204697>"
@@ -22,8 +23,7 @@ EMOJI_LEADERSHIP = "<:SNM_Directors:1476982272795082874>"
 EMOJI_MANAGEMENT = "<:SNM_Management:1476982218558537950>"
 EMOJI_STAFF = "<:SNM_Trial_Staff:1476982367464849439>"
 
-STATE_FILE = "roster_state.json"
-PREFIX = "!"
+ACCENT_COLOUR = 0x5865F2
 
 # ============================================================
 # STAFF HIERARCHY — HIGHEST RANK FIRST
@@ -129,7 +129,7 @@ intents.members = True
 intents.message_content = True
 
 bot = commands.Bot(
-    command_prefix=PREFIX,
+    command_prefix="!",
     intents=intents,
     help_command=None,
 )
@@ -137,13 +137,14 @@ bot = commands.Bot(
 refresh_locks = {}
 startup_refresh_done = set()
 
+
 # ============================================================
-# SAVE / LOAD ROSTER MESSAGE ID
+# STATE FILE
 # ============================================================
 
 def load_state():
     try:
-        with open(STATE_FILE, "r", encoding="utf-8") as file:
+        with open(ROSTER_STATE_FILE, "r", encoding="utf-8") as file:
             data = json.load(file)
             return data if isinstance(data, dict) else {}
     except FileNotFoundError:
@@ -155,7 +156,7 @@ def load_state():
 
 def save_state(state):
     try:
-        with open(STATE_FILE, "w", encoding="utf-8") as file:
+        with open(ROSTER_STATE_FILE, "w", encoding="utf-8") as file:
             json.dump(state, file, indent=4)
     except OSError as error:
         print(f"Could not save roster state: {error}")
@@ -181,8 +182,6 @@ def get_highest_staff_role(member):
 def get_department_mentions(member):
     highest = get_highest_staff_role(member)
 
-    # Department mentions are only displayed for members whose
-    # highest configured staff role is Management.
     if not highest or highest["role_id"] != MANAGEMENT_ROLE_ID:
         return ""
 
@@ -196,7 +195,7 @@ def get_department_mentions(member):
             if role:
                 mentions.append(role.mention)
 
-    return (" " + " ".join(mentions)) if mentions else ""
+    return " " + " ".join(mentions) if mentions else ""
 
 
 def get_unique_role_members(guild, role_id):
@@ -208,6 +207,7 @@ def get_unique_role_members(guild, role_id):
 
         highest = get_highest_staff_role(member)
 
+        # Count a member only under their highest configured staff rank.
         if highest and highest["role_id"] == role_id:
             members.append(member)
 
@@ -218,52 +218,50 @@ def get_unique_role_members(guild, role_id):
 
 
 def format_member_line(member, group):
-    line = member.mention
+    result = member.mention
 
     if group["role_id"] == MANAGEMENT_ROLE_ID:
-        line += get_department_mentions(member)
+        result += get_department_mentions(member)
 
-    return line
+    return result
 
 
 # ============================================================
-# BUILD DISCORD COMPONENTS V2 ROSTER
+# COMPONENTS V2 ROSTER BUILDER
 # ============================================================
 
 async def create_roster_view(guild):
     try:
-        # Prevent a slow member-cache request from hanging startup.
         await asyncio.wait_for(
             guild.chunk(cache=True),
             timeout=10,
         )
     except asyncio.TimeoutError:
-        print("Member-cache warning: chunking timed out; continuing.")
+        print("Member-cache request timed out; continuing.")
     except (discord.Forbidden, discord.HTTPException) as error:
         print(f"Member-cache warning: {error}")
 
-    # Components V2 layout.
     view = discord.ui.LayoutView(timeout=None)
 
     container = discord.ui.Container(
-        accent_colour=discord.Colour(EMBED_COLOUR)
+        accent_colour=discord.Colour(ACCENT_COLOUR)
     )
 
-    # Main title.
     container.add_item(
         discord.ui.TextDisplay(
-            f"# {EMOJI_TEAM} SNM STAFF ROSTER"
+            f"# {EMOJI_TEAM} {ROSTER_TITLE}"
         )
     )
 
-    for section_index, section in enumerate(SECTION_ORDER):
-        section_lines = [
+    for index, section in enumerate(SECTION_ORDER):
+        lines = [
             f"## {SECTION_EMOJIS[section]} {section}",
             "",
         ]
 
         section_groups = [
-            group for group in GROUPS
+            group
+            for group in GROUPS
             if group["section"] == section
         ]
 
@@ -272,14 +270,11 @@ async def create_roster_view(guild):
 
             if role is None:
                 print(
-                    f"WARNING: Role '{group['name']}' "
-                    f"({group['role_id']}) was not found."
+                    f"WARNING: Missing role {group['name']} "
+                    f"({group['role_id']})"
                 )
-                section_lines.append(
-                    f"**{group['name']}** — Role not found"
-                )
-                section_lines.append("N/A")
-                section_lines.append("")
+                lines.append(f"**{group['name']}** — N/A")
+                lines.append("")
                 continue
 
             members = get_unique_role_members(
@@ -292,33 +287,27 @@ async def create_roster_view(guild):
             else:
                 count = f"{len(members)}/{group['target']}"
 
-            # Role mention and staff count stay on the same line.
-            section_lines.append(f"{role.mention} — {count}")
+            lines.append(f"{role.mention} — {count}")
 
             if members:
                 for member in members:
-                    section_lines.append(
-                        format_member_line(member, group)
-                    )
+                    lines.append(format_member_line(member, group))
             else:
-                section_lines.append("N/A")
+                lines.append("N/A")
 
-            section_lines.append("")
+            lines.append("")
 
-        section_text = "\n".join(section_lines).strip()
+        section_text = "\n".join(lines).strip()
 
-        # Discord TextDisplay content has a character limit.
-        # Split unusually large sections without cutting a line.
+        # Split long sections into valid TextDisplay components.
         chunks = []
         current_lines = []
         current_length = 0
 
         for line in section_text.split("\n"):
-            extra_length = len(line) + (
-                1 if current_lines else 0
-            )
+            extra = len(line) + (1 if current_lines else 0)
 
-            if current_lines and current_length + extra_length > 3800:
+            if current_lines and current_length + extra > 3800:
                 chunks.append("\n".join(current_lines))
                 current_lines = []
                 current_length = 0
@@ -331,16 +320,11 @@ async def create_roster_view(guild):
         if current_lines:
             chunks.append("\n".join(current_lines))
 
-        if not chunks:
-            chunks = [f"## {section}"]
-
         for chunk in chunks:
-            container.add_item(
-                discord.ui.TextDisplay(chunk)
-            )
+            container.add_item(discord.ui.TextDisplay(chunk))
 
-        # Native Discord V2 separator between sections.
-        if section_index < len(SECTION_ORDER) - 1:
+        # Native Discord Components V2 divider.
+        if index < len(SECTION_ORDER) - 1:
             container.add_item(
                 discord.ui.Separator(
                     visible=True,
@@ -353,23 +337,26 @@ async def create_roster_view(guild):
 
 
 # ============================================================
-# IDENTIFY THE EXISTING ROSTER MESSAGE
+# FIND EXISTING ROSTER
 # ============================================================
 
-def contains_roster_title(value):
-    if isinstance(value, dict):
-        content = value.get("content")
+def contains_roster_title(data):
+    if isinstance(data, dict):
+        content = data.get("content")
 
-        if isinstance(content, str) and "SNM STAFF ROSTER" in content.upper():
+        if (
+            isinstance(content, str)
+            and ROSTER_TITLE in content.upper()
+        ):
             return True
 
         return any(
-            contains_roster_title(item)
-            for item in value.values()
+            contains_roster_title(value)
+            for value in data.values()
         )
 
-    if isinstance(value, list):
-        return any(contains_roster_title(item) for item in value)
+    if isinstance(data, list):
+        return any(contains_roster_title(item) for item in data)
 
     return False
 
@@ -378,15 +365,15 @@ def is_roster_panel(message):
     if bot.user is None or message.author.id != bot.user.id:
         return False
 
-    # Recognise the old embed so it can be converted to V2.
+    # Recognise the previous embed version.
     for embed in message.embeds:
         if (
             embed.title
-            and "SNM STAFF ROSTER" in embed.title.upper()
+            and ROSTER_TITLE in embed.title.upper()
         ):
             return True
 
-    # Recognise the new Components V2 roster.
+    # Recognise the new Components V2 version.
     for component in message.components:
         try:
             if contains_roster_title(component.to_dict()):
@@ -403,40 +390,42 @@ async def find_existing_panel(channel):
             if is_roster_panel(message):
                 return message
     except (discord.Forbidden, discord.HTTPException) as error:
-        print(f"Could not search channel history: {error}")
-        print("Check View Channel and Read Message History permissions.")
+        print(f"Could not search roster history: {error}")
 
     return None
 
 
 # ============================================================
-# AUTOMATICALLY SEND OR UPDATE THE ROSTER
+# REFRESH / RECREATE ROSTER
 # ============================================================
 
 async def refresh_roster(guild):
-    lock = refresh_locks.setdefault(guild.id, asyncio.Lock())
+    lock = refresh_locks.setdefault(
+        guild.id,
+        asyncio.Lock(),
+    )
 
     async with lock:
         print(
-            f"Starting roster refresh for {guild.name} "
-            f"({guild.id})"
+            f"Starting roster refresh for "
+            f"{guild.name} ({guild.id})"
         )
 
         channel = guild.get_channel(ROSTER_CHANNEL_ID)
 
         if channel is None:
             try:
-                channel = await bot.fetch_channel(ROSTER_CHANNEL_ID)
-            except discord.NotFound:
-                print(
-                    f"ERROR: Channel {ROSTER_CHANNEL_ID} does not exist."
+                channel = await bot.fetch_channel(
+                    ROSTER_CHANNEL_ID
                 )
+            except discord.NotFound:
+                print("ERROR: Roster channel was not found.")
                 return
             except discord.Forbidden:
-                print("ERROR: Bot cannot access the roster channel.")
+                print("ERROR: Bot cannot access roster channel.")
                 return
             except discord.HTTPException as error:
-                print(f"ERROR fetching roster channel: {error}")
+                print(f"ERROR fetching channel: {error}")
                 return
 
         if not isinstance(channel, discord.TextChannel):
@@ -450,64 +439,65 @@ async def refresh_roster(guild):
         permissions = channel.permissions_for(guild.me)
 
         if not permissions.view_channel:
-            print("ERROR: Bot needs View Channel permission.")
+            print("ERROR: Missing View Channel permission.")
             return
 
         if not permissions.send_messages:
-            print("ERROR: Bot needs Send Messages permission.")
+            print("ERROR: Missing Send Messages permission.")
             return
 
         if not permissions.read_message_history:
-            print("ERROR: Bot needs Read Message History permission.")
+            print("ERROR: Missing Read Message History permission.")
             return
 
-        # Build the Components V2 layout.
+        if not permissions.embed_links:
+            print(
+                "WARNING: Embed Links permission is missing. "
+                "Components V2 may fail to send."
+            )
+
         try:
             view = await create_roster_view(guild)
         except Exception as error:
             print(
-                f"ERROR building V2 roster: "
+                f"ERROR building roster: "
                 f"{type(error).__name__}: {error}"
             )
             return
 
         state = load_state()
         guild_key = str(guild.id)
-        saved_message_id = state.get(guild_key)
+        saved_id = state.get(guild_key)
         roster_message = None
 
-        # First, look for the saved message.
-        if saved_message_id:
+        # Try the saved message first.
+        if saved_id:
             try:
-                candidate = await channel.fetch_message(
-                    int(saved_message_id)
-                )
+                candidate = await channel.fetch_message(int(saved_id))
 
                 if is_roster_panel(candidate):
                     roster_message = candidate
 
             except discord.NotFound:
                 print(
-                    "Saved roster message was deleted; "
-                    "searching for the old roster."
+                    "Saved panel was deleted. "
+                    "A replacement will be created if none is found."
                 )
             except (ValueError, TypeError):
                 print("Saved roster message ID is invalid.")
             except discord.Forbidden:
-                print("ERROR: Bot cannot read the saved roster message.")
+                print("ERROR: Cannot read the saved roster message.")
                 return
             except discord.HTTPException as error:
-                print(f"ERROR fetching saved roster: {error}")
+                print(f"ERROR fetching saved message: {error}")
                 return
 
-        # Search history if the saved message is missing.
+        # Search for a panel if the saved ID no longer works.
         if roster_message is None:
             roster_message = await find_existing_panel(channel)
 
         try:
             if roster_message is not None:
-                # Clear legacy embed/content fields while replacing
-                # the old message with the Components V2 layout.
                 await roster_message.edit(
                     content=None,
                     embed=None,
@@ -520,28 +510,23 @@ async def refresh_roster(guild):
                     f"SUCCESS: V2 roster updated "
                     f"(message ID: {roster_message.id})"
                 )
-
             else:
+                print("No existing panel found. Creating a new one.")
+
                 roster_message = await channel.send(view=view)
 
                 print(
                     f"SUCCESS: New V2 roster sent "
-                    f"to channel {channel.id}"
+                    f"(message ID: {roster_message.id})"
                 )
-                print(f"Roster message ID: {roster_message.id}")
 
             state[guild_key] = roster_message.id
             save_state(state)
 
-        except discord.Forbidden:
+        except Exception as error:
             print(
-                "ERROR: Discord denied permission to send or edit "
-                "the V2 roster."
-            )
-        except discord.HTTPException as error:
-            print(
-                f"ERROR sending/editing V2 roster: "
-                f"{error}"
+                f"ERROR sending/editing roster: "
+                f"{type(error).__name__}: {error}"
             )
 
 
@@ -561,21 +546,54 @@ async def on_ready():
         startup_refresh_done.add(guild.id)
 
         try:
-            print(f"Automatically posting roster for {guild.name}...")
+            print(f"Automatically checking roster for {guild.name}...")
             await refresh_roster(guild)
-
         except Exception as error:
+            startup_refresh_done.discard(guild.id)
             print(
-                f"STARTUP ROSTER ERROR: "
+                f"STARTUP ERROR: "
                 f"{type(error).__name__}: {error}"
             )
-            startup_refresh_done.discard(guild.id)
 
-    print("Automatic roster startup check finished.")
+    print("Startup roster check finished.")
 
 
 # ============================================================
-# AUTOMATIC UPDATES WHEN STAFF CHANGES
+# RECREATE PANEL WHEN THE ROSTER MESSAGE IS DELETED
+# ============================================================
+
+@bot.event
+async def on_message_delete(message):
+    if message.channel.id != ROSTER_CHANNEL_ID:
+        return
+
+    state = load_state()
+    guild_key = str(message.guild.id) if message.guild else None
+
+    if not guild_key:
+        return
+
+    saved_id = state.get(guild_key)
+
+    was_saved_panel = (
+        saved_id is not None
+        and str(saved_id) == str(message.id)
+    )
+
+    was_roster_panel = is_roster_panel(message)
+
+    if was_saved_panel or was_roster_panel:
+        print("Roster panel deleted. Recreating it...")
+        await asyncio.sleep(2)
+
+        guild = message.guild
+
+        if guild:
+            await refresh_roster(guild)
+
+
+# ============================================================
+# AUTOMATIC STAFF UPDATES
 # ============================================================
 
 @bot.event
@@ -609,21 +627,18 @@ async def on_guild_role_delete(role):
 
 # ============================================================
 # OPTIONAL ADMIN COMMANDS
-# Automatic startup does not depend on these commands.
 # ============================================================
 
 @bot.command(name="refresh_roster")
 @commands.has_permissions(administrator=True)
 async def refresh_roster_command(ctx):
     await refresh_roster(ctx.guild)
-    await ctx.send("Roster refresh attempted.", delete_after=5)
 
 
 @bot.command(name="setup_roster")
 @commands.has_permissions(administrator=True)
 async def setup_roster_command(ctx):
     await refresh_roster(ctx.guild)
-    await ctx.send("Roster setup attempted.", delete_after=5)
 
 
 @refresh_roster_command.error
@@ -633,11 +648,7 @@ async def refresh_roster_error(ctx, error):
             "You need Administrator permission to use this command."
         )
     else:
-        print(
-            f"Refresh command error: "
-            f"{type(error).__name__}: {error}"
-        )
-        await ctx.send("Roster refresh failed. Check Railway logs.")
+        print(f"Refresh command error: {error}")
 
 
 @setup_roster_command.error
@@ -647,11 +658,7 @@ async def setup_roster_error(ctx, error):
             "You need Administrator permission to use this command."
         )
     else:
-        print(
-            f"Setup command error: "
-            f"{type(error).__name__}: {error}"
-        )
-        await ctx.send("Roster setup failed. Check Railway logs.")
+        print(f"Setup command error: {error}")
 
 
 # ============================================================
