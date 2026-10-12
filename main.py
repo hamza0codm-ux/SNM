@@ -287,7 +287,7 @@ def build_description(guild: discord.Guild) -> str:
                     )
 
             else:
-                lines.append("• *No members*")
+                lines.append("• N/A")
 
             lines.append("")
 
