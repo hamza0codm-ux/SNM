@@ -328,7 +328,7 @@ async def create_roster_view(guild):
             container.add_item(
                 discord.ui.Separator(
                     visible=True,
-                    spacing=discord.SeparatorSpacingSize.small,
+                    spacing=discord.SeparatorSpacing.small,
                 )
             )
 
