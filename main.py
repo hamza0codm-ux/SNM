@@ -35,14 +35,11 @@ GROUPS = [
     {"name": "Founder", "role_id": 1558896822410547210, "target": 1, "section": "Ownership"},
     {"name": "Owner", "role_id": 1558896894678278164, "target": 2, "section": "Ownership"},
     {"name": "Co Owner", "role_id": 1558896918443327589, "target": None, "section": "Ownership"},
-
     {"name": "Operations", "role_id": 1558896966459592704, "target": 4, "section": "Leadership"},
     {"name": "Directors", "role_id": 1558897001406406741, "target": 8, "section": "Leadership"},
-
     {"name": "General Management", "role_id": 1558897060441235558, "target": 4, "section": "Management"},
     {"name": "Management", "role_id": 1558897026568028273, "target": 13, "section": "Management"},
     {"name": "Admin", "role_id": 1558897520606974112, "target": 5, "section": "Management"},
-
     {"name": "Staff", "role_id": 1558897546242429100, "target": 10, "section": "Staff"},
     {"name": "Trial Staff", "role_id": 1558897577976528957, "target": 10, "section": "Staff"},
 ]
@@ -159,7 +156,10 @@ def get_unique_role_members(guild, role_id):
         if highest and highest["role_id"] == role_id:
             members.append(member)
 
-    return sorted(members, key=lambda member: member.display_name.casefold())
+    return sorted(
+        members,
+        key=lambda member: member.display_name.casefold(),
+    )
 
 
 def format_member_line(member, group):
@@ -176,12 +176,30 @@ def format_member_line(member, group):
 # ============================================================
 
 async def create_roster_embed(guild):
+    print("DEBUG: Starting member cache refresh...")
+
     try:
-        await guild.chunk(cache=True)
+        await asyncio.wait_for(
+            guild.chunk(cache=True),
+            timeout=10,
+        )
+        print("DEBUG: Member cache refresh completed.")
+
+    except asyncio.TimeoutError:
+        print(
+            "WARNING: Member cache timed out. "
+            "Continuing with currently cached members."
+        )
+
     except (discord.Forbidden, discord.HTTPException) as error:
         print(f"Member cache warning: {error}")
 
     lines = []
+
+    print(
+        f"DEBUG: Building roster from "
+        f"{len(guild.members)} cached members."
+    )
 
     for section in SECTION_ORDER:
         section_groups = [
@@ -208,7 +226,10 @@ async def create_roster_embed(guild):
                 lines.append("")
                 continue
 
-            members = get_unique_role_members(guild, group["role_id"])
+            members = get_unique_role_members(
+                guild,
+                group["role_id"],
+            )
 
             if group["target"] is None:
                 count = "N/A"
@@ -249,6 +270,7 @@ async def create_roster_embed(guild):
     )
 
     # No footer.
+    print("DEBUG: Embed created successfully.")
     return embed
 
 
@@ -267,10 +289,14 @@ def is_roster_panel(message):
 
 
 async def find_existing_panel(channel):
+    print("DEBUG: Searching channel for an existing roster panel...")
+
     try:
         async for message in channel.history(limit=500):
             if is_roster_panel(message):
+                print(f"DEBUG: Found existing panel: {message.id}")
                 return message
+
     except (discord.Forbidden, discord.HTTPException) as error:
         print(f"Could not search channel history: {error}")
         print("Check View Channel and Read Message History permissions.")
@@ -290,16 +316,29 @@ async def refresh_roster(guild):
 
         # Find the configured channel.
         channel = guild.get_channel(ROSTER_CHANNEL_ID)
+        print(f"DEBUG: Roster channel lookup: {channel}")
 
         if channel is None:
+            print("DEBUG: Channel not cached. Fetching from Discord...")
+
             try:
-                channel = await bot.fetch_channel(ROSTER_CHANNEL_ID)
+                channel = await asyncio.wait_for(
+                    bot.fetch_channel(ROSTER_CHANNEL_ID),
+                    timeout=15,
+                )
+
+            except asyncio.TimeoutError:
+                print("ERROR: Fetching the roster channel timed out.")
+                return
+
             except discord.NotFound:
                 print(f"ERROR: Channel {ROSTER_CHANNEL_ID} does not exist.")
                 return
+
             except discord.Forbidden:
                 print("ERROR: Bot cannot access the configured roster channel.")
                 return
+
             except discord.HTTPException as error:
                 print(f"ERROR fetching roster channel: {error}")
                 return
@@ -312,7 +351,7 @@ async def refresh_roster(guild):
             print("ERROR: Roster channel belongs to a different server.")
             return
 
-        # Verify that the bot can send and embed messages.
+        # Check channel permissions.
         permissions = channel.permissions_for(guild.me)
 
         if not permissions.view_channel:
@@ -328,11 +367,26 @@ async def refresh_roster(guild):
             return
 
         # Build the embed.
+        print("DEBUG: Starting embed creation...")
+
         try:
-            embed = await create_roster_embed(guild)
-        except Exception as error:
-            print(f"ERROR building roster embed: {type(error).__name__}: {error}")
+            embed = await asyncio.wait_for(
+                create_roster_embed(guild),
+                timeout=25,
+            )
+
+        except asyncio.TimeoutError:
+            print("ERROR: Creating the roster embed timed out.")
             return
+
+        except Exception as error:
+            print(
+                f"ERROR building roster embed: "
+                f"{type(error).__name__}: {error}"
+            )
+            return
+
+        print("DEBUG: Embed ready. Checking for an existing panel...")
 
         state = load_state()
         guild_key = str(guild.id)
@@ -342,16 +396,31 @@ async def refresh_roster(guild):
         # First try the saved message ID.
         if saved_message_id:
             try:
-                candidate = await channel.fetch_message(int(saved_message_id))
+                candidate = await asyncio.wait_for(
+                    channel.fetch_message(int(saved_message_id)),
+                    timeout=10,
+                )
+
                 if is_roster_panel(candidate):
                     roster_message = candidate
+
             except discord.NotFound:
-                print("Saved roster message was deleted. Searching for a replacement.")
+                print(
+                    "Saved roster message was deleted. "
+                    "Searching for a replacement."
+                )
+
             except (ValueError, TypeError):
                 print("Saved roster message ID is invalid.")
+
+            except asyncio.TimeoutError:
+                print("ERROR: Fetching the saved panel timed out.")
+                return
+
             except discord.Forbidden:
                 print("ERROR: Bot cannot read the saved roster message.")
                 return
+
             except discord.HTTPException as error:
                 print(f"ERROR fetching saved roster message: {error}")
                 return
@@ -363,18 +432,45 @@ async def refresh_roster(guild):
         # Edit the existing message or send a new one.
         try:
             if roster_message is not None:
-                await roster_message.edit(embed=embed)
-                print(f"SUCCESS: Existing roster panel updated: {roster_message.id}")
+                await asyncio.wait_for(
+                    roster_message.edit(embed=embed),
+                    timeout=15,
+                )
+
+                print(
+                    f"SUCCESS: Existing roster panel updated: "
+                    f"{roster_message.id}"
+                )
+
             else:
-                roster_message = await channel.send(embed=embed)
-                print(f"SUCCESS: NEW roster embed SENT to channel {channel.id}")
+                print(
+                    f"DEBUG: Sending a new embed to channel "
+                    f"{channel.id}..."
+                )
+
+                roster_message = await asyncio.wait_for(
+                    channel.send(embed=embed),
+                    timeout=15,
+                )
+
+                print(
+                    f"SUCCESS: NEW roster embed SENT to channel "
+                    f"{channel.id}"
+                )
                 print(f"Roster message ID: {roster_message.id}")
 
             state[guild_key] = roster_message.id
             save_state(state)
 
+        except asyncio.TimeoutError:
+            print("ERROR: Sending or updating the roster timed out.")
+
         except discord.Forbidden:
-            print("ERROR: Discord denied permission to send or edit the roster embed.")
+            print(
+                "ERROR: Discord denied permission to send "
+                "or edit the roster embed."
+            )
+
         except discord.HTTPException as error:
             print(f"ERROR sending/editing roster embed: {error}")
 
@@ -388,7 +484,6 @@ async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print(f"Connected to {len(bot.guilds)} server(s).")
 
-    # Prevent duplicate startup refreshes if Discord reconnects.
     for guild in bot.guilds:
         if guild.id in startup_refresh_done:
             continue
@@ -397,10 +492,23 @@ async def on_ready():
 
         try:
             print(f"Automatically posting roster for {guild.name}...")
-            await refresh_roster(guild)
+
+            await asyncio.wait_for(
+                refresh_roster(guild),
+                timeout=60,
+            )
+
+        except asyncio.TimeoutError:
+            print(
+                f"ERROR: Complete roster refresh timed out "
+                f"for {guild.name}."
+            )
+            startup_refresh_done.discard(guild.id)
+
         except Exception as error:
             print(
-                f"STARTUP ROSTER ERROR: {type(error).__name__}: {error}"
+                f"STARTUP ROSTER ERROR: "
+                f"{type(error).__name__}: {error}"
             )
             startup_refresh_done.discard(guild.id)
 
@@ -442,7 +550,7 @@ async def on_guild_role_delete(role):
 
 # ============================================================
 # OPTIONAL ADMIN COMMANDS
-# The roster does not depend on these commands.
+# Automatic posting does not depend on these commands.
 # ============================================================
 
 @bot.command(name="refresh_roster")
@@ -462,18 +570,28 @@ async def setup_roster_command(ctx):
 @refresh_roster_command.error
 async def refresh_roster_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
-        await ctx.send("You need Administrator permission to use this command.")
+        await ctx.send(
+            "You need Administrator permission to use this command."
+        )
     else:
-        print(f"Refresh command error: {type(error).__name__}: {error}")
+        print(
+            f"Refresh command error: "
+            f"{type(error).__name__}: {error}"
+        )
         await ctx.send("Roster refresh failed. Check the Railway logs.")
 
 
 @setup_roster_command.error
 async def setup_roster_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
-        await ctx.send("You need Administrator permission to use this command.")
+        await ctx.send(
+            "You need Administrator permission to use this command."
+        )
     else:
-        print(f"Setup command error: {type(error).__name__}: {error}")
+        print(
+            f"Setup command error: "
+            f"{type(error).__name__}: {error}"
+        )
         await ctx.send("Roster setup failed. Check the Railway logs.")
 
 
